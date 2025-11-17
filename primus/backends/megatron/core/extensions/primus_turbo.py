@@ -31,9 +31,11 @@ from megatron.core.utils import get_tensor_model_parallel_group_if_none
 from megatron.training.global_vars import get_args
 from primus_turbo.pytorch.core.float8 import (
     Float8QuantConfig,
+    Format,
     ScalingGranularity,
     ScalingStrategy,
     check_fp8_support,
+    check_mxfp8_support,
 )
 from torch import Tensor
 from transformer_engine.pytorch.fp8 import (
@@ -51,6 +53,10 @@ class PrimusTurboFloat8QuantConfig(Float8QuantConfig):
 
     def current_scaling(self):
         return self.granularity == ScalingGranularity.TENSORWISE and self.strategy == ScalingStrategy.DYNAMIC
+
+    def mxfp8_scaling(self):
+        # NOTE: The mxfp8 recipe only support e4m3 format in megatron-lm backend.
+        return self.granularity == ScalingGranularity.MX_BLOCKWISE and self.format == Format.E4M3
 
 
 class PrimusTurboFP8GlobalStateManager(FP8GlobalStateManager):
@@ -99,6 +105,9 @@ class PrimusTurboFP8GlobalStateManager(FP8GlobalStateManager):
         if enabled_turbo:
             fp8_available, reason_for_no_fp8 = check_fp8_support()
             assert fp8_available, reason_for_no_fp8
+            if turbo_fp8_quant_config.mxfp8_scaling():
+                mxfp8_available, reason_for_no_mxfp8 = check_mxfp8_support()
+                assert mxfp8_available, reason_for_no_mxfp8
 
     @classmethod
     def get_turbo_fp8_quant_config(cls) -> PrimusTurboFloat8QuantConfig:
@@ -386,7 +395,7 @@ class PrimusTurboRowParallelLinear(TELinear):
             quant_config = PrimusTurboFP8GlobalStateManager.get_turbo_fp8_quant_config()
             if quant_config.block_scaling():
                 fp8_gemm = pt.ops.gemm_fp8_blockwise
-            elif quant_config.current_scaling():
+            elif quant_config.current_scaling() or quant_config.mxfp8_scaling():
                 fp8_gemm = pt.ops.gemm_fp8
             else:
                 raise ValueError("Not support quant config.")
@@ -484,7 +493,7 @@ class PrimusTurboColumnParallelLinear(TELinear):
             quant_config = PrimusTurboFP8GlobalStateManager.get_turbo_fp8_quant_config()
             if quant_config.block_scaling():
                 fp8_gemm = pt.ops.gemm_fp8_blockwise
-            elif quant_config.current_scaling():
+            elif quant_config.current_scaling() or quant_config.mxfp8_scaling():
                 fp8_gemm = pt.ops.gemm_fp8
             else:
                 raise ValueError("Not support quant config.")
@@ -576,7 +585,7 @@ class PrimusTurboColumnParallelLinearTorch(ColumnParallelLinear):
             quant_config = PrimusTurboFP8GlobalStateManager.get_turbo_fp8_quant_config()
             if quant_config.block_scaling():
                 fp8_gemm = pt.ops.gemm_fp8_blockwise
-            elif quant_config.current_scaling():
+            elif quant_config.current_scaling() or quant_config.mxfp8_scaling():
                 fp8_gemm = pt.ops.gemm_fp8
             else:
                 raise ValueError("Not support quant config.")
@@ -700,7 +709,7 @@ class PrimusTurboLayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
             quant_config = PrimusTurboFP8GlobalStateManager.get_turbo_fp8_quant_config()
             if quant_config.block_scaling():
                 fp8_gemm = pt.ops.gemm_fp8_blockwise
-            elif quant_config.current_scaling():
+            elif quant_config.current_scaling() or quant_config.mxfp8_scaling():
                 fp8_gemm = pt.ops.gemm_fp8
             else:
                 raise ValueError("Not support quant config.")
